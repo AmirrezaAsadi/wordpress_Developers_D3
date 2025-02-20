@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Developer Network Visualization</title>
+    <meta charset="utf-8">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .visualization {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .tooltip {
+            position: absolute;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+        }
+        .legend {
+            margin-top: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+        }
+        .legend p {
+            margin: 5px 0;
+            color: #666;
+            font-size: 14px;
+        }
+        #fileInput {
+            margin: 20px 0;
+            padding: 10px;
+            border: 2px dashed #ccc;
+            border-radius: 4px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 style="color: #333; margin-bottom: 20px;">Developer Network Visualization</h1>
+        
+        <div id="fileInput">
+            <p>Upload your data files:</p>
+            <input type="file" id="nodeData" accept=".csv" multiple>
+            <p style="font-size: 12px; color: #666;">
+                Required files: developer_network_countrybetweenness.csv and network_edges.csv
+            </p>
+        </div>
+
+        <div class="visualization">
+            <svg id="network"></svg>
+        </div>
+
+        <div class="legend">
+            <p>• Node size represents betweenness centrality</p>
+            <p>• Edge thickness shows number of interactions</p>
+            <p>• Arrows indicate review direction</p>
+            <p>• Hover over nodes for detailed information</p>
+            <p>• Drag nodes to explore relationships</p>
+            <p>• Use mouse wheel to zoom in/out</p>
+        </div>
+    </div>
+
+    <script>
+        let nodeData, edgeData;
+
+        document.getElementById('nodeData').addEventListener('change', async (event) => {
+            const files = Array.from(event.target.files);
+            
+            try {
+                for (const file of files) {
+                    const text = await file.text();
+                    const result = Papa.parse(text, {
+                        header: true,
+                        dynamicTyping: true,
+                        skipEmptyLines: true
+                    });
+
+                    if (file.name.includes('countrybetweenness')) {
+                        nodeData = result.data;
+                    } else if (file.name.includes('edges')) {
+                        edgeData = result.data;
+                    }
+                }
+
+                if (nodeData && edgeData) {
+                    createVisualization(nodeData, edgeData);
+                }
+            } catch (error) {
+                console.error('Error processing files:', error);
+                alert('Error processing files. Please check the console for details.');
+            }
+        });
+
+        function getCountryCode(country) {
+            const countryMap = {
+                'USA': 'US',
+                'United States': 'US',
+                'United Kingdom': 'GB',
+                'Germany': 'DE',
+                'France': 'FR',
+                'Spain': 'ES',
+                'Italy': 'IT',
+                'Netherlands': 'NL',
+                'Belgium': 'BE',
+                'Switzerland': 'CH',
+                'Austria': 'AT',
+                'Canada': 'CA',
+                'Australia': 'AU',
+                'India': 'IN',
+                'Unknown': 'UN'
+            };
+            return countryMap[country] || 'UN';
+        }
+
+        function createVisualization(nodes, links) {
+            // Clear previous visualization
+            d3.select('#network').selectAll('*').remove();
+
+            const width = 1000;
+            const height = 800;
+
+            const svg = d3.select('#network')
+                .attr('width', width)
+                .attr('height', height)
+                .attr('viewBox', [0, 0, width, height]);
+
+            const container = svg.append('g');
+
+            // Create arrow markers
+            const defs = svg.append('defs');
+            ['small', 'medium', 'large'].forEach((size, i) => {
+                defs.append('marker')
+                    .attr('id', `arrow-${size}`)
+                    .attr('viewBox', '-10 -10 20 20')
+                    .attr('refX', 15 + i * 2)
+                    .attr('refY', 0)
+                    .attr('markerWidth', 6 + i)
+                    .attr('markerHeight', 6 + i)
+                    .attr('orient', 'auto')
+                    .append('path')
+                    .attr('d', 'M-6,-6 L 0,0 L -6,6')
+                    .attr('fill', '#999');
+            });
+
+            // Create scales
+            const betweennessScale = d3.scaleLinear()
+                .domain([0, d3.max(nodes, d => d.betweenness)])
+                .range([8, 25]);
+
+            const edgeWeightScale = d3.scaleLinear()
+                .domain([1, d3.max(links, d => d.weight)])
+                .range([1, 4]);
+
+            // Create simulation
+            const simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(links)
+                    .id(d => d.developer_id)
+                    .distance(100))
+                .force('charge', d3.forceManyBody().strength(-200))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => betweennessScale(d.betweenness) + 5));
+
+            // Create links
+            const link = container.append('g')
+                .selectAll('path')
+                .data(links)
+                .join('path')
+                .attr('stroke', '#999')
+                .attr('stroke-opacity', 0.6)
+                .attr('stroke-width', d => edgeWeightScale(d.weight))
+                .attr('marker-end', d => `url(#arrow-${
+                    d.weight <= 2 ? 'small' : d.weight <= 4 ? 'medium' : 'large'
+                })`);
+
+            // Create nodes
+            const node = container.append('g')
+                .selectAll('.node')
+                .data(nodes)
+                .join('g')
+                .attr('class', 'node')
+                .call(d3.drag()
+                    .on('start', dragstarted)
+                    .on('drag', dragged)
+                    .on('end', dragended));
+
+            // Add circular backgrounds
+            node.append('circle')
+                .attr('r', d => betweennessScale(d.betweenness))
+                .attr('fill', 'white')
+                .attr('stroke', '#666')
+                .attr('stroke-width', 1);
+
+            // Add country flags
+            node.append('image')
+                .attr('xlink:href', d => {
+                    const country = d.country === 'United States' ? 'USA' : d.country;
+                    return `https://flagcdn.com/w40/${getCountryCode(country).toLowerCase()}.png`;
+                })
+                .attr('x', d => -betweennessScale(d.betweenness))
+                .attr('y', d => -betweennessScale(d.betweenness))
+                .attr('width', d => betweennessScale(d.betweenness) * 2)
+                .attr('height', d => betweennessScale(d.betweenness) * 2)
+                .attr('clip-path', 'circle(50%)')
+                .on('error', function() {
+                    const parent = d3.select(this.parentNode);
+                    parent.select('circle').attr('fill', '#ccc');
+                    this.remove();
+                });
+
+            // Add tooltip
+            const tooltip = d3.select('body').append('div')
+                .attr('class', 'tooltip')
+                .style('opacity', 0);
+
+            node.on('mouseover', (event, d) => {
+                tooltip.transition()
+                    .duration(200)
+                    .style('opacity', .9);
+                tooltip.html(`
+                    Developer: ${d.developer_id}<br/>
+                    Country: ${d.country}<br/>
+                    Betweenness: ${d.betweenness.toFixed(4)}<br/>
+                    In-degree: ${d.in_degree}<br/>
+                    Out-degree: ${d.out_degree}
+                `)
+                    .style('left', (event.pageX + 10) + 'px')
+                    .style('top', (event.pageY - 28) + 'px');
+            })
+            .on('mouseout', () => {
+                tooltip.transition()
+                    .duration(500)
+                    .style('opacity', 0);
+            });
+
+            // Add zoom behavior
+            const zoom = d3.zoom()
+                .scaleExtent([0.1, 4])
+                .on('zoom', (event) => {
+                    container.attr('transform', event.transform);
+                });
+
+            svg.call(zoom);
+
+            // Update positions
+            simulation.on('tick', () => {
+                link.attr('d', d => {
+                    const dx = d.target.x - d.source.x;
+                    const dy = d.target.y - d.source.y;
+                    const dr = Math.sqrt(dx * dx + dy * dy) * 2;
+                    
+                    if (d.source.developer_id === d.target.developer_id) {
+                        const x = d.source.x;
+                        const y = d.source.y;
+                        const r = betweennessScale(d.source.betweenness);
+                        return `M ${x-r},${y} 
+                                a ${r},${r} 0 1,1 ${r*2},0 
+                                a ${r},${r} 0 1,1 ${-r*2},0`;
+                    } else {
+                        return `M${d.source.x},${d.source.y}A${dr},${dr} 0 0,1 ${d.target.x},${d.target.y}`;
+                    }
+                });
+
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+            });
+
+            function dragstarted(event) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                event.subject.fx = event.subject.x;
+                event.subject.fy = event.subject.y;
+            }
+
+            function dragged(event) {
+                event.subject.fx = event.x;
+                event.subject.fy = event.y;
+            }
+
+            function dragended(event) {
+                if (!event.active) simulation.alphaTarget(0);
+                event.subject.fx = null;
+                event.subject.fy = null;
+            }
+        }
+    </script>
+</body>
+</html>
